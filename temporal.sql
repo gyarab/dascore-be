@@ -1,129 +1,226 @@
 CREATE OR REPLACE FUNCTION timepoint_is_set() RETURNS boolean
 LANGUAGE SQL AS $$
-	SELECT current_setting('dascore.timepoint', TRUE) IS NOT NULL
-		AND current_setting('dascore.timepoint', TRUE) <> '';
+    SELECT current_setting('dascore.timepoint', TRUE) IS NOT NULL
+        AND current_setting('dascore.timepoint', TRUE) <> '';
 $$;
 
+
+-- Sets a table up to keep history.
+-- It expects a table named NAME_current to exist, which will be used to keep
+-- the current rows.
+-- It creates a table named NAME_history for keeping historical records
 CREATE OR REPLACE FUNCTION version_table(table_name text) RETURNS void
 LANGUAGE plpgsql AS $func$
-DECLARE
-	data_cols_trigstr text;
-	trig_cond text;
-	trig_setstmt text;
 BEGIN
-	-- TODO: Schema
-	SELECT string_agg(CASE
-		-- This relies on coalesce acting "lazily" and only evaluating the
-		-- second option if the first one is NULL
-		WHEN column_default IS NOT NULL THEN
-			format('COALESCE(NEW.%I, %s)', column_name, column_default)
-		ELSE format('NEW.%I', column_name)
-	END, ', ')
-	INTO data_cols_trigstr
-	FROM information_schema.columns
-	WHERE columns.table_name = format('%I_current', $1);
+    EXECUTE format($$
+        ALTER TABLE %1$I_current
+        ADD COLUMN sys_period tstzrange
+            NOT NULL
+            DEFAULT tstzrange(current_timestamp, null);
 
-	SELECT string_agg(format('OLD.%1$I = %1$I', a.attname), ' AND ')
-	INTO trig_cond
-	FROM pg_index AS i
-	JOIN pg_attribute AS a
-		ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-	WHERE i.indrelid = format('%I_current', table_name)::regclass
-		AND i.indisprimary;
+        CREATE TABLE %1$I_history (LIKE %1$I_current);
 
-	SELECT string_agg(format('%1$I = NEW.%1$I', column_name), ', ')
-	INTO trig_setstmt
-	FROM information_schema.columns
-	WHERE columns.table_name = format('%I_current', $1);
+        CREATE TRIGGER versioning_trigger
+        BEFORE INSERT OR UPDATE OR DELETE ON %1$I_current
+        FOR EACH ROW EXECUTE PROCEDURE
+            versioning('sys_period', '%1$I_history', true);
+    $$, table_name);
+END;
+$func$;
 
-	EXECUTE format($$
-		ALTER TABLE %I_current
-		ADD COLUMN sys_period tstzrange
-			NOT NULL
-			DEFAULT tstzrange(current_timestamp, null);
+-- Creates a view for unified access to a pair of tables created by
+-- version_table()
+-- The permissions are SQL expressions returning a bool that decide if an
+-- operation is permitted or not.
+-- "select_perm" is applied for all operations, not just SELECT.
+-- "modify_perm" is applied to all modifying operations.
+CREATE OR REPLACE FUNCTION dascore_setup_table(
+    table_name text,
+    select_perm text,
+    modify_perm text DEFAULT null,
+    insert_perm text DEFAULT null,
+    update_perm text DEFAULT null,
+    delete_perm text DEFAULT null)
+RETURNS void
+LANGUAGE plpgsql AS $func$
+DECLARE
+    data_cols_trigstr text;
+    trig_cond text;
+    trig_setstmt text;
+    select_cond text;
+    insert_cond text;
+    insert_check text;
+    update_cond text;
+    update_check text;
+    delete_cond text;
+    delete_check text;
+BEGIN
+    -- TODO: Schema
+    data_cols_trigstr := (
+        SELECT string_agg(CASE
+            -- This relies on coalesce acting "lazily" and only evaluating the
+            -- second option if the first one is NULL
+            WHEN column_default IS NOT NULL THEN
+                format('COALESCE(NEW.%I, %s)', column_name, column_default)
+            ELSE format('NEW.%I', column_name)
+        END, ', ')
+        FROM information_schema.columns AS c
+        WHERE c.table_name = format('%I_current', $1));
 
-		CREATE TABLE %1$I_history (LIKE %1$I_current);
+    trig_cond := (
+        SELECT string_agg(format('OLD.%1$I = %1$I', a.attname), ' AND ')
+        FROM pg_index AS i
+        JOIN pg_attribute AS a
+            ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = format('%I_current', table_name)::regclass
+            AND i.indisprimary);
 
-		CREATE TRIGGER versioning_trigger
-		BEFORE INSERT OR UPDATE OR DELETE ON %1$I_current
-		FOR EACH ROW EXECUTE PROCEDURE
-			versioning('sys_period', '%1$I_history', true);
+    trig_setstmt := (
+        SELECT string_agg(format('%1$I = NEW.%1$I', column_name), ', ')
+        FROM information_schema.columns
+        WHERE columns.table_name = format('%I_current', $1));
 
-		CREATE VIEW %1$I AS
-		SELECT * FROM %1$I_current
-			-- TODO: Is there a performance penalty for calling
-			-- current_setting so much?
-			WHERE NOT timepoint_is_set()
-				OR sys_period @> current_setting('dascore.timepoint', TRUE)::timestamptz
-		UNION SELECT * FROM %1$I_history
-			WHERE timepoint_is_set()
-				AND sys_period @> current_setting('dascore.timepoint', TRUE)::timestamptz;
-		-- Unfortunately, row-level security becomes somewhat of a mess when
-		-- views get involved. For example, views consider RLS policies as if
-		-- they are being run by the user who created the view. As that's most
-		-- likely a superuser, views ignore RLS policies. This can be fixed
-		-- by reassigning the view to another user who can't ignore RLS.
-		-- This is pretty error prone. Security in SQL is supposed to prevent
-		-- vulnerabilities, not create a new class of them, so we'll have to
-		-- come up with a robust solution (or get Postgres "fixed").
-		GRANT ALL ON TABLE %1$I_current TO viewowner;
-		GRANT ALL ON TABLE %1$I_history TO viewowner;
-		ALTER VIEW %1$I OWNER TO viewowner;
-		GRANT ALL ON TABLE %1$I TO dvdkon;
 
-		CREATE FUNCTION %1$I_insert_trigger() RETURNS trigger
-		LANGUAGE plpgsql AS $func2$
-		BEGIN
-			-- TODO: Better name?
-			IF timepoint_is_set() THEN
-				RAISE EXCEPTION
-					'Can''t insert into temporal table %% when timetraveling',
-					%1$L;
-			END IF;
-			INSERT INTO %1$I_current VALUES (%2$s);
-			RETURN NEW;
-		END
-		$func2$;
+    select_cond := (
+        CASE
+            WHEN select_perm IS NOT NULL THEN format('WHERE (%s)', select_perm)
+            ELSE ''
+        END);
 
-		CREATE TRIGGER temporal_insert
-		INSTEAD OF INSERT ON %1$I
-		FOR EACH ROW
-		EXECUTE PROCEDURE %1$I_insert_trigger();
+    EXECUTE format($$
+        CREATE OR REPLACE VIEW %1$I
+        WITH (security_barrier = true) AS
+        SELECT * FROM (
+            SELECT * FROM %1$I_current
+                -- TODO: Is there a performance penalty for calling
+                -- current_setting so much?
+                WHERE NOT timepoint_is_set()
+                    OR sys_period @> current_setting('dascore.timepoint', TRUE)::timestamptz
+            UNION SELECT * FROM %1$I_history
+                WHERE timepoint_is_set()
+                    AND sys_period @> current_setting('dascore.timepoint', TRUE)::timestamptz)
+            AS ROW
+        %2$s;
+    $$, table_name, select_cond);
 
-		CREATE FUNCTION %1$I_update_trigger() RETURNS trigger
-		LANGUAGE plpgsql AS $func2$
-		BEGIN
-			IF timepoint_is_set() THEN
-				RAISE EXCEPTION
-					'Can''t update temporal table %% when timetraveling', %1$L;
-			END IF;
-			UPDATE %1$I_current SET %4$s WHERE %3$s;
-			RETURN NEW;
-		END
-		$func2$;
 
-		CREATE TRIGGER temporal_update
-		INSTEAD OF UPDATE ON %1$I
-		FOR EACH ROW
-		EXECUTE PROCEDURE %1$I_update_trigger();
+    insert_cond := (
+        SELECT string_agg(format('(%s)', expr), ' AND ')
+        FROM (VALUES (select_perm), (modify_perm), (insert_perm))
+            AS perms (expr)
+        WHERE expr IS NOT NULL);
 
-		CREATE FUNCTION %1$I_delete_trigger() RETURNS trigger
-		LANGUAGE plpgsql AS $func2$
-		BEGIN
-			IF timepoint_is_set() THEN
-				RAISE EXCEPTION
-					'Can''t delete from temporal table %% when timetraveling',
-					%1$L;
-			END IF;
-			DELETE FROM %1$I_current WHERE %3$s;
-			RETURN NEW;
-		END
-		$func2$;
+    insert_check := (
+        CASE
+            WHEN insert_cond IS NULL THEN ''
+            ELSE format($$
+                IF NOT (%s) THEN
+                    RAISE EXCEPTION 'Permission denied on INSERT into %%', %L;
+                END IF;
+            $$, insert_cond, table_name)
+        END);
 
-		CREATE TRIGGER temporal_delete
-		INSTEAD OF DELETE ON %1$I
-		FOR EACH ROW
-		EXECUTE PROCEDURE %1$I_delete_trigger()
-	$$, table_name, data_cols_trigstr, trig_cond, trig_setstmt);
+    EXECUTE format($$
+        CREATE FUNCTION %1$I_insert_trigger() RETURNS trigger
+        LANGUAGE plpgsql AS $func2$
+        DECLARE
+            ROW ALIAS FOR NEW;
+        BEGIN
+            -- TODO: Better name?
+            IF timepoint_is_set() THEN
+                RAISE EXCEPTION
+                    'Can''t insert into temporal table %% when timetraveling',
+                    %1$L;
+            END IF;
+            %3$s
+            INSERT INTO %1$I_current VALUES (%2$s);
+            RETURN NEW;
+        END
+        $func2$;
+
+        CREATE TRIGGER temporal_insert
+        INSTEAD OF INSERT ON %1$I
+        FOR EACH ROW
+        EXECUTE PROCEDURE %1$I_insert_trigger();
+    $$, table_name, data_cols_trigstr, insert_check);
+
+
+    update_cond := (
+        SELECT string_agg(format('(%s)', expr), ' AND ')
+        FROM (VALUES (select_perm), (modify_perm), (update_perm))
+            AS perms (expr)
+        WHERE expr IS NOT NULL);
+
+    update_check := (
+        CASE
+            WHEN update_cond IS NULL THEN ''
+            ELSE format($$
+                IF NOT (%s) THEN
+                    RAISE EXCEPTION 'Permission denied on UPDATE of %%', %L;
+                END IF;
+            $$, update_cond, table_name)
+        END);
+
+    EXECUTE format($$
+        CREATE FUNCTION %1$I_update_trigger() RETURNS trigger
+        LANGUAGE plpgsql AS $func2$
+        DECLARE
+            ROW ALIAS FOR OLD;
+        BEGIN
+            IF timepoint_is_set() THEN
+                RAISE EXCEPTION
+                    'Can''t update temporal table %% when timetraveling', %1$L;
+            END IF;
+            %4$s
+            UPDATE %1$I_current SET %2$s WHERE %3$s;
+            RETURN NEW;
+        END
+        $func2$;
+
+        CREATE TRIGGER temporal_update
+        INSTEAD OF UPDATE ON %1$I
+        FOR EACH ROW
+        EXECUTE PROCEDURE %1$I_update_trigger();
+    $$, table_name, trig_setstmt, trig_cond, update_check);
+
+
+    delete_cond := (
+        SELECT string_agg(format('(%s)', expr), ' AND ')
+        FROM (VALUES (select_perm), (modify_perm), (delete_perm))
+            AS perms (expr)
+        WHERE expr IS NOT NULL);
+
+    delete_check := (
+        CASE
+            WHEN delete_cond IS NULL THEN ''
+            ELSE format($$
+                IF NOT (%s) THEN
+                    RAISE EXCEPTION 'Permission denied on DELETE in %%', %L;
+                END IF;
+            $$, delete_cond, table_name)
+        END);
+
+    EXECUTE format($$
+        CREATE FUNCTION %1$I_delete_trigger() RETURNS trigger
+        LANGUAGE plpgsql AS $func2$
+        DECLARE
+            ROW ALIAS FOR OLD;
+        BEGIN
+            IF timepoint_is_set() THEN
+                RAISE EXCEPTION
+                    'Can''t delete from temporal table %% when timetraveling',
+                    %1$L;
+            END IF;
+            %2$s
+            DELETE FROM %1$I_current WHERE %3$s;
+            RETURN NEW;
+        END
+        $func2$;
+
+        CREATE TRIGGER temporal_delete
+        INSTEAD OF DELETE ON %1$I
+        FOR EACH ROW
+        EXECUTE PROCEDURE %1$I_delete_trigger()
+    $$, table_name, delete_check, trig_cond);
 END;
 $func$;
