@@ -6,7 +6,7 @@ SELECT version_table('users');
 
 CREATE TABLE IF NOT EXISTS permissions (
     id serial PRIMARY KEY,
-    name text NOT NULL
+    name text UNIQUE NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS user_permissions_current (
