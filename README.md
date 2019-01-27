@@ -30,3 +30,13 @@ tables display either current data or the state at a certain point in time.
 The view created by `dascore_setup_table()` also checks permissions:
 expressions that only allow an SQL operation to happen if they evaluate to
 `true`.
+
+# Using DASCore
+
+DASCore consists of multiple files. `create_schema.sql` contains an example
+database schema. The intended usage is copying the contents of the file to your
+project's schema definition file and modifying it to add columns you might
+want. `temporal.sql` contains functions that help with creating temporal tables
+with permissions. `auth.sql` contains functions that deal with creating a
+"session" with a set user and verifying permissions. These two files should be
+ran on the database with every update.
