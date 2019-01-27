@@ -161,17 +161,19 @@ BEGIN
             $$, update_cond, table_name)
         END);
 
-    -- TODO: Permission checks should run against both OLD and NEW
     EXECUTE format($$
         CREATE FUNCTION %1$I_update_trigger() RETURNS trigger
         LANGUAGE plpgsql AS $func2$
         DECLARE
-            ROW ALIAS FOR OLD;
+            ROW %1$I%%ROWTYPE;
         BEGIN
             IF timepoint_is_set() THEN
                 RAISE EXCEPTION
                     'Can''t update temporal table %% when timetraveling', %1$L;
             END IF;
+            ROW := OLD;
+            %4$s
+            ROW := NEW;
             %4$s
             UPDATE %1$I_data SET %2$s WHERE %3$s;
             RETURN NEW;
@@ -344,8 +346,11 @@ BEGIN
         CREATE FUNCTION %1$I_update_trigger() RETURNS trigger
         LANGUAGE plpgsql AS $func2$
         DECLARE
-            ROW ALIAS FOR OLD;
+            ROW %1$I%%ROWTYPE;
         BEGIN
+            ROW := OLD;
+            %4$s
+            ROW := NEW;
             %4$s
             UPDATE %1$I_data SET %2$s WHERE %3$s;
             RETURN NEW;
