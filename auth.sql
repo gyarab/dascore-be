@@ -39,18 +39,17 @@ CREATE OR REPLACE FUNCTION
 user_has_permission(_permission_name text, _id_user integer) RETURNS boolean
 LANGUAGE plpgsql AS $$
     DECLARE
-        permission_id integer;
+        permission_count integer;
     BEGIN
-        permission_id := (
-            SELECT id FROM permissions WHERE name = _permission_name);
-        ASSERT permission_id IS NOT NULL, 'Provided permission doesn''t exist';
+        permission_count := (
+            SELECT COUNT(*) FROM permissions WHERE name = _permission_name);
+        ASSERT permission_count = 1, 'Provided permission doesn''t exist';
         RETURN EXISTS (
             -- Timetraveling should not affect permissions in any way
             -- It's not meant to restore the database to a previous state,
             -- but to show a read-only version of that state.
             SELECT FROM user_permissions_current
-            WHERE id_permission = permission_id
-                AND id_user = _id_user);
+            WHERE permission = _permission_name AND id_user = _id_user);
     END;
 $$;
 
