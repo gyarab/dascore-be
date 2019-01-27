@@ -36,7 +36,7 @@ expressions that only allow an SQL operation to happen if they evaluate to
 DASCore consists of multiple files. `create_schema.sql` contains an example
 database schema. The intended usage is copying the contents of the file to your
 project's schema definition file and modifying it to add columns you might
-want. `temporal.sql` contains functions that help with creating temporal tables
+want. `table_funcs.sql` contains functions that help with creating temporal tables
 with permissions. `auth.sql` contains functions that deal with creating a
 "session" with a set user and verifying permissions. These two files should be
 ran on the database with every update.
