@@ -1,38 +1,44 @@
--- TODO: Is the session info storage mechanism really secure?
--- What about DISCARD?
-
 CREATE OR REPLACE FUNCTION session_user_is_set() RETURNS boolean
-LANGUAGE SQL AS $$
-    SELECT EXISTS (
-        SELECT FROM pg_catalog.pg_class
-            WHERE relnamespace = pg_my_temp_schema()
-            AND relname = 'temp_session_user');
+LANGUAGE plperl STABLE SECURITY DEFINER AS $$
+    return (defined $SESSION_USER_ID ? 1 : 0);
 $$;
 
-CREATE OR REPLACE FUNCTION session_user_set(id_user integer) RETURNS void
-LANGUAGE plpgsql AS $$
-    BEGIN
-        IF session_user_is_set() THEN
-            RAISE 'Tried to set user, but user was already set';
-        END IF;
-
-        CREATE TEMPORARY TABLE temp_session_user (
-            id_user integer
-        );
-
-        INSERT INTO temp_session_user (id_user) VALUES (id_user);
-    END;
+CREATE OR REPLACE FUNCTION session_user_set(integer, text) RETURNS void
+LANGUAGE plperl SECURITY DEFINER AS $$
+    my ($id_user, $logout_key) = @_;
+    if(defined $SESSION_USER_ID) {
+        elog(ERROR, "Tried to set user, but user was already set");
+        return;
+    }
+    $SESSION_USER_ID = $id_user;
+    $SESSION_LOGOUT_KEY = $logout_key;
 $$;
 
 CREATE OR REPLACE FUNCTION session_user_get() RETURNS integer
-LANGUAGE plpgsql AS $$
-    BEGIN
-        IF NOT session_user_is_set() THEN
-            RAISE 'Tried to get user, but user was not set';
-        END IF;
+LANGUAGE plperl STABLE SECURITY DEFINER AS $$
+    if(not defined $SESSION_USER_ID) {
+        elog(ERROR, "Tried to get user, but user was not set");
+        return;
+    }
+    return $SESSION_USER_ID;
+$$;
 
-        RETURN (SELECT id_user FROM temp_session_user);
-    END;
+CREATE OR REPLACE FUNCTION session_logout(text) RETURNS void
+LANGUAGE plperl SECURITY DEFINER AS $$
+    my ($logout_key) = @_;
+
+    if(not defined $SESSION_LOGOUT_KEY) {
+        elog(ERROR, "Tried to logout, but logout key was not set");
+        return;
+    }
+    if($SESSION_LOGOUT_KEY ne $logout_key) {
+        undef $SESSION_LOGOUT_KEY;
+        elog(ERROR, "Tried to logout, but incorrect logout key "
+                      . "was provided. Clearing logout key");
+        return;
+    }
+    undef $SESSION_USER_ID;
+    undef $SESSION_LOGOUT_KEY;
 $$;
 
 CREATE OR REPLACE FUNCTION
