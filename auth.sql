@@ -61,6 +61,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION
 session_user_has_permission(permission_name text) RETURNS boolean
+SECURITY DEFINER
 LANGUAGE sql AS $$
     SELECT user_has_permission(permission_name, session_user_get());
 $$;
