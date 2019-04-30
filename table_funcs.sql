@@ -175,7 +175,7 @@ BEGIN
             %4$s
             ROW := NEW;
             %4$s
-            UPDATE %1$I_data SET %2$s WHERE %3$s;
+            UPDATE %1$I_current SET %2$s WHERE %3$s;
             RETURN NEW;
         END
         $func2$;
