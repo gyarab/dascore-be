@@ -122,7 +122,7 @@ BEGIN
 
     EXECUTE format($$
         CREATE FUNCTION %1$I_insert_trigger() RETURNS trigger
-        LANGUAGE plpgsql AS $func2$
+        LANGUAGE plpgsql SECURITY DEFINER AS $func2$
         DECLARE
             ROW ALIAS FOR NEW;
         BEGIN
@@ -163,7 +163,7 @@ BEGIN
 
     EXECUTE format($$
         CREATE FUNCTION %1$I_update_trigger() RETURNS trigger
-        LANGUAGE plpgsql AS $func2$
+        LANGUAGE plpgsql SECURITY DEFINER AS $func2$
         DECLARE
             ROW %1$I%%ROWTYPE;
         BEGIN
@@ -205,7 +205,7 @@ BEGIN
 
     EXECUTE format($$
         CREATE FUNCTION %1$I_delete_trigger() RETURNS trigger
-        LANGUAGE plpgsql AS $func2$
+        LANGUAGE plpgsql SECURITY DEFINER AS $func2$
         DECLARE
             ROW ALIAS FOR OLD;
         BEGIN
@@ -309,7 +309,7 @@ BEGIN
 
     EXECUTE format($$
         CREATE FUNCTION %1$I_insert_trigger() RETURNS trigger
-        LANGUAGE plpgsql AS $func2$
+        LANGUAGE plpgsql SECURITY DEFINER AS $func2$
         DECLARE
             ROW ALIAS FOR NEW;
         BEGIN
@@ -344,7 +344,7 @@ BEGIN
 
     EXECUTE format($$
         CREATE FUNCTION %1$I_update_trigger() RETURNS trigger
-        LANGUAGE plpgsql AS $func2$
+        LANGUAGE plpgsql SECURITY DEFINER AS $func2$
         DECLARE
             ROW %1$I%%ROWTYPE;
         BEGIN
@@ -382,7 +382,7 @@ BEGIN
 
     EXECUTE format($$
         CREATE FUNCTION %1$I_delete_trigger() RETURNS trigger
-        LANGUAGE plpgsql AS $func2$
+        LANGUAGE plpgsql SECURITY DEFINER AS $func2$
         DECLARE
             ROW ALIAS FOR OLD;
         BEGIN
